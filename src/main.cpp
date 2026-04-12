@@ -60,7 +60,7 @@ const float PATH_RESOLUTION = 5.0f;          // mm per interpolation waypoint KE
 // This is the only speed control. Decrease to go faster, increase if stalling.
 // The working test used delay(2) = 2ms. Start here and tune down carefully.
 // =============================================================================
-const int STEP_DELAY_MS = 2;                 // ms per stepper step
+const int STEP_DELAY_MS = 2;                 // ms per stepper step. 2 seems to be the limit
 
 // =============================================================================
 // OBJECTS & STATE
@@ -83,6 +83,8 @@ void stepMotor(int direction);
 void cartesianToPolar(float x, float y, float &r, float &theta);
 int  servoAngleToMicros(float angleDeg);
 void printStatus();
+void testPlus();
+void testDiamond();
 
 // =============================================================================
 // SETUP
@@ -108,12 +110,46 @@ void setup() {
   current.x = 0.0f;
   current.y = 0.0f;
   moveTo(0.0f, 0.0f);
+  printStatus();
+  delay(1000);
 }
 
 // =============================================================================
 // LOOP
 // =============================================================================
 void loop() {
+  testDiamond(); 
+
+
+  // //draw a circle with radius 50mm around the origin (petri dish is 135mm, so 50mm radius keeps the arm within bounds)
+  // for (int angle = 0; angle < 360; angle += 10) {
+  //   float rad = angle * PI / 180.0f;
+  //   float x = 50.0f * cos(rad);
+  //   float y = 50.0f * sin(rad);
+  //   moveTo(x, y);
+  //   printStatus();
+  //   delay(5);
+  // }
+  // delay(1000);
+
+}
+
+void testDiamond() {
+  moveTo(40, 0);
+  printStatus();
+  delay(1000); 
+  moveTo(0, 40);
+  printStatus();
+  delay(1000);
+  moveTo(-40, 0);
+  printStatus();
+  delay(1000);
+  moveTo(0, -40);
+  printStatus();
+  delay(1000);
+}
+
+void testPlus() {
   moveTo(0, 0);
   printStatus();
   delay(1000);
@@ -145,20 +181,7 @@ void loop() {
   moveTo(0, -40);
   printStatus();
   delay(1000);
-
-  // //draw a circle with radius 50mm around the origin (petri dish is 135mm, so 50mm radius keeps the arm within bounds)
-  // for (int angle = 0; angle < 360; angle += 10) {
-  //   float rad = angle * PI / 180.0f;
-  //   float x = 50.0f * cos(rad);
-  //   float y = 50.0f * sin(rad);
-  //   moveTo(x, y);
-  //   printStatus();
-  //   delay(5);
-  // }
-  // delay(1000);
-
 }
-
 // =============================================================================
 // CARTESIAN → POLAR CONVERSION
 // Applies the physical pivot offset before converting.
