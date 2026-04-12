@@ -49,6 +49,7 @@ void moveTo(float targetX, float targetY);
 void updateActuators(float r, float theta);
 void stepMotor(int direction);
 void printStatus();
+void ejectArm();
 
 void setup() {
   Serial.begin(115200);
@@ -62,6 +63,7 @@ void setup() {
   pinMode(STEPPER_PIN4, OUTPUT);
 
   Serial.println("--- GANTRY ONLINE ---");
+  ejectArm();
   homeStepper();
   
   // Initialize software position at 0,0
@@ -170,12 +172,27 @@ void homeStepper() {
   Serial.println("Homing...");
   while (true) {
     limitSwitch.loop();
-    if (limitSwitch.isPressed() || limitSwitch.getState() == LOW) break;
+    if (limitSwitch.isPressed()) break;// || limitSwitch.getState() == LOW) break;
     stepMotor(-1);
     delay(2);
   }
   current.stepperSteps = 0;
   Serial.println("Homing Complete.");
+}
+void ejectArm() {
+  Serial.println("Ejecting...");
+  while (true) {
+    limitSwitch.loop();
+    if (limitSwitch.isPressed() || limitSwitch.getState() == LOW) break;
+    stepMotor(1);
+    delay(2);
+  }
+  limitSwitch.loop();
+  delay(500);
+//  Serial.println(limitSwitch.isPressed());
+ // Serial.println(limitSwitch.getState());
+
+  Serial.println("Ejection Complete.");
 }
 
 
