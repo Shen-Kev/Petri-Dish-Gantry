@@ -44,6 +44,7 @@ const int   SERVO_MAX_PULSE = 2500;           // µs  → SERVO_MAX_DEG
 const float SERVO_MIN_DEG   = 0.0f;
 const float SERVO_MAX_DEG   = 270.0f;
 const float SERVO_ANGLE_OFFSET = 45.0f; // trig "forward" = 90°, servo neutral = 135°
+const float SERVO_MOUNT_TRIM = 3.0f; // degrees — increase to rotate arm clockwise, decrease for CCW
 
 const float PATH_RESOLUTION = 0.5f;          // mm per interpolation segment
 
@@ -355,7 +356,7 @@ void moveTo(float targetX, float targetY) {
     float extension            = constrain(r - MIN_EXTENSION, 0.0f,
                                            MAX_EXTENSION - MIN_EXTENSION);
     waypoints[i].stepperTarget = (long)(extension * STEPS_PER_MM);
-    waypoints[i].servoMicros = servoAngleToMicros(theta + SERVO_ANGLE_OFFSET);
+    waypoints[i].servoMicros = servoAngleToMicros(theta + SERVO_ANGLE_OFFSET + SERVO_MOUNT_TRIM);
   }
 
   // ---- Phase 2: Scan for direction reversals, dispatch sub-moves ----------
