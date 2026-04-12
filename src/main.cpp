@@ -60,8 +60,14 @@ const float PATH_RESOLUTION = 0.5f;          // mm per interpolation segment
 //   ACCEL_STEPS       : number of steps over which to ramp START → CRUISE.
 //                       More steps = gentler ramp = safer for heavy loads.
 // =============================================================================
+/* This setup works, but is just slower
 const int STEP_DELAY_START  = 8000;          // µs  (~125 steps/sec)
 const int STEP_DELAY_CRUISE = 1500;          // µs  (~667 steps/sec)
+const int ACCEL_STEPS       = 200;           // steps across the ramp
+*/
+//Faster setup
+const int STEP_DELAY_START  = 8000;          // µs  (~125 steps/sec)
+const int STEP_DELAY_CRUISE = 1500;          // µs  (~1000 steps/sec)
 const int ACCEL_STEPS       = 200;           // steps across the ramp
 
 // =============================================================================
@@ -132,6 +138,8 @@ void setup() {
 // =============================================================================
 // LOOP
 // =============================================================================
+
+
 void loop() {
   moveTo(-40, 0);
   printStatus();
