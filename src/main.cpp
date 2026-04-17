@@ -85,6 +85,7 @@ int  servoAngleToMicros(float angleDeg);
 void printStatus();
 void testPlus();
 void testDiamond();
+void handleSerialInput();
 
 // =============================================================================
 // SETUP
@@ -104,35 +105,67 @@ void setup() {
   pinMode(STEPPER_PIN4, OUTPUT);
 
   Serial.println("--- GANTRY ONLINE ---");
+  Serial.println("Ejecting arm...");
   ejectArm();
   homeStepper();
 
-  current.x = 0.0f;
-  current.y = 0.0f;
-  moveTo(0.0f, 0.0f);
+  current.x = -X_OFFSET;                   // = -10.0
+  current.y = MIN_EXTENSION - Y_OFFSET;    // = 48 - 124 = -76.0
+  Serial.println("Moving to (0,0)...");
+  moveTo(0.0f, 0.0f);                      // now has a real distance → actually moves
   printStatus();
   delay(1000);
+  Serial.println("Entering Loop...");
+
 }
 
 // =============================================================================
 // LOOP
 // =============================================================================
 void loop() {
-  testDiamond(); 
 
-
-  // //draw a circle with radius 50mm around the origin (petri dish is 135mm, so 50mm radius keeps the arm within bounds)
-  // for (int angle = 0; angle < 360; angle += 10) {
-  //   float rad = angle * PI / 180.0f;
-  //   float x = 50.0f * cos(rad);
-  //   float y = 50.0f * sin(rad);
-  //   moveTo(x, y);
-  //   printStatus();
-  //   delay(5);
-  // }
-  // delay(1000);
+  //testDiamond(); 
+  handleSerialInput();
 
 }
+
+// =============================================================================
+// SERIAL COMMAND HANDLER
+// Usage: type "x,y" in Serial Monitor and press Enter. e.g. "40,0" or "-20,35"
+// =============================================================================
+
+void handleSerialInput() {
+  Serial.println(F("Awaiting command (x,y):"));
+
+  while (!Serial.available()) { delay(10); }
+
+  String input = Serial.readStringUntil('\n');
+  input.trim();
+  input.replace("\r", "");  // explicitly strip any carriage return
+
+  // Echo back what was actually received so you can verify
+  Serial.print(F("Received: ["));
+  Serial.print(input);
+  Serial.println(F("]"));
+
+  int commaIndex = input.indexOf(',');
+  if (commaIndex == -1) {
+    Serial.println(F("ERROR: Bad format. Use: x,y  (e.g. 40,0 or -20,35)"));
+    return;
+  }
+
+  float x = input.substring(0, commaIndex).toFloat();
+  float y = input.substring(commaIndex + 1).toFloat();
+
+  Serial.print(F("Moving to X="));
+  Serial.print(x, 2);
+  Serial.print(F(", Y="));
+  Serial.println(y, 2);
+
+  moveTo(x, y);
+  printStatus();
+}
+
 
 void testDiamond() {
   moveTo(40, 0);
