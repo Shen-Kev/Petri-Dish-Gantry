@@ -24,7 +24,7 @@ from pathlib import Path
 from picamera2 import Picamera2
 
 # ---------------- CONFIG ----------------
-CHESSBOARD_SIZE = (9, 6)      # (cols, rows) of INTERIOR corners
+CHESSBOARD_SIZE = (8, 5)      # (cols, rows) of INTERIOR corners
 SQUARE_SIZE_MM  = 25.0
 FRAME_WIDTH     = 1280
 FRAME_HEIGHT    = 720
