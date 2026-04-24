@@ -3,3 +3,24 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+
+# Calibration artifacts (regenerated per setup)
+*.npz
+
+# Trained model weights (large binary; store separately)
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+tracker-env/
+
+# Captured datasets (large, store separately)
+dataset/
+dataset_raw/
+
+# OS junk
+.DS_Store
+Thumbs.db
