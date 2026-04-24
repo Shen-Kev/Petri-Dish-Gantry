@@ -8,11 +8,11 @@
         {
             "name": "PlatformIO",
             "includePath": [
-                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/include",
-                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/src",
-                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/.pio/libdeps/arduino_nano_esp32/ezButton/src",
-                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/.pio/libdeps/arduino_nano_esp32/Stepper/src",
-                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/.pio/libdeps/arduino_nano_esp32/Servo/src",
+                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/include",
+                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/src",
+                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/.pio/libdeps/arduino_nano_esp32/ezButton/src",
+                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/.pio/libdeps/arduino_nano_esp32/Stepper/src",
+                "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/.pio/libdeps/arduino_nano_esp32/Servo/src",
                 "/Users/kevinshen/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
                 "/Users/kevinshen/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include",
                 "/Users/kevinshen/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/esp_additions/freertos",
@@ -250,11 +250,11 @@
             "browse": {
                 "limitSymbolsToIncludedHeaders": true,
                 "path": [
-                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/include",
-                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/src",
-                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/.pio/libdeps/arduino_nano_esp32/ezButton/src",
-                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/.pio/libdeps/arduino_nano_esp32/Stepper/src",
-                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/.pio/libdeps/arduino_nano_esp32/Servo/src",
+                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/include",
+                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/src",
+                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/.pio/libdeps/arduino_nano_esp32/ezButton/src",
+                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/.pio/libdeps/arduino_nano_esp32/Stepper/src",
+                    "/Users/kevinshen/Raman Lab UROP Petri Dish Gantry/arduino/.pio/libdeps/arduino_nano_esp32/Servo/src",
                     "/Users/kevinshen/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/newlib/platform_include",
                     "/Users/kevinshen/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include",
                     "/Users/kevinshen/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/include/freertos/include/esp_additions/freertos",
