@@ -1,24 +1,38 @@
 // =============================================================================
-//  POLAR GANTRY — FIRMWARE WITH RPi LINK
+//  POLAR GANTRY — FIRMWARE WITH RPi LINK + PREEMPTIVE MOTION
 //  Target: Arduino Nano ESP32
 //
 //  Architecture:
 //    moveTo() interpolates a straight line in Cartesian space at PATH_RESOLUTION
 //    intervals. At each waypoint it writes the servo, then steps the stepper at
-//    a fixed STEP_DELAY_MS until the target extension is reached. No buffering,
-//    no ramping, no lookahead — structurally identical to the working test loop.
+//    a fixed STEP_DELAY_MS until the target extension is reached.
 //
-//  RPi communication (added):
+//  ** PREEMPTION (added) **
+//    Between waypoints — and inside the per-step loop — moveTo() checks
+//    whether the Pi has sent a fresher target. If so, it aborts the
+//    current motion immediately. The main loop then starts a new move
+//    from the gantry's CURRENT physical position toward the new target.
+//    Without this, a long move would commit the gantry for seconds while
+//    the marker has already moved elsewhere — that was the source of the
+//    perceived lag. With preemption the gantry is always heading toward
+//    the latest target, never a stale one.
+//
+//  Position tracking strategy:
+//    During motion, we update current.x/current.y at the END of each
+//    completed waypoint. If preempted between waypoints, current.x/y is
+//    already correct (last completed waypoint). If preempted mid-waypoint
+//    (inside the inner step loop), we conservatively report the LAST
+//    completed waypoint as our position — slightly behind reality, but
+//    the next moveTo will simply close the small gap. This keeps the
+//    code simple and avoids polar-to-cartesian inverse computation.
+//
+//  RPi communication:
 //    - Serial0 on D0/D1 talks to the Raspberry Pi at 115200.
 //    - Inbound  : "<X,Y>\n"        (target work coords in mm)
-//    - Outbound : "<ACK:N>\n"      (after each completed move)
+//    - Outbound : "<ACK:N>\n"      (after each completed OR preempted move)
 //                 "<POS:X,Y>\n"    (periodic position reports)
 //                 "<ERR:msg>\n"    (firmware-side error)
-//    - "Drop-old, keep-latest": only the most recent pending target is
-//      ever executed. While moveTo is running, new frames overwrite the
-//      pending target rather than queuing — matches the Pi's size-1 queue.
-//    - Serial0 RX buffer is enlarged to 2 KB so commands sent during a
-//      long move don't overflow.
+//    - Single-slot "pending" target. Latest write wins.
 //
 //  Wiring to Pi 5:
 //    Pi pin 8  (GPIO14, TXD) -> Nano ESP32 D0 (RX0)
@@ -50,43 +64,46 @@ const float TOOTH_PITCH_MM = 3.016f;
 const float STEPS_PER_MM   = STEPS_PER_REV / (TEETH_COUNT * TOOTH_PITCH_MM);
                                               // ≈ 56.59 steps/mm
 
-const float Y_LIMIT_SWITCH_OFFSET = 48.0f;   // mm, pivot → end effector at limit switch
+const float Y_LIMIT_SWITCH_OFFSET = 48.0f;
 const float MIN_EXTENSION         = Y_LIMIT_SWITCH_OFFSET;
-const float MAX_EXTENSION         = 200.0f;  // mm, maximum physical reach
+const float MAX_EXTENSION         = 200.0f;
 
-//const float X_OFFSET       = 8.0f;           // mm, pivot → work origin
-const float X_OFFSET = 15.0f;
-const float Y_OFFSET       = 120.0f;         // mm, pivot → work origin
+const float X_OFFSET = 10.0f;
+const float Y_OFFSET = 124.0f;
 
-const int   SERVO_MIN_PULSE = 500;            // µs → SERVO_MIN_DEG
-const int   SERVO_MAX_PULSE = 2500;           // µs → SERVO_MAX_DEG
+const int   SERVO_MIN_PULSE = 500;
+const int   SERVO_MAX_PULSE = 2500;
 const float SERVO_MIN_DEG   = 0.0f;
-const float SERVO_MAX_DEG   = 270.0f;        // MS24 is a 270° servo
+const float SERVO_MAX_DEG   = 270.0f;
 
-// Servo coordinate offset: trig returns 90° for "straight forward",
-// but the servo's physical neutral is at 135° (1500µs = midpoint of 270°).
-const float SERVO_ANGLE_OFFSET = 45.0f;      // degrees
+const float SERVO_ANGLE_OFFSET = 45.0f;
+const float SERVO_MOUNT_TRIM   = 3.0f;
 
-// Mounting trim: compensates for arm not being perfectly centred on the servo horn.
-// Increase to rotate arm clockwise, decrease for CCW. Start at 0 and tune by eye.
-const float SERVO_MOUNT_TRIM   = 3.0f;       // degrees
-
-const float PATH_RESOLUTION = 5.0f;          // mm per interpolation waypoint
+// 2 mm waypoints for finer preemption granularity. With preemption, more
+// waypoints = more chances to react to a new target during a long move.
+// The step-skipping you saw before was a per-step issue (STEP_DELAY_MS
+// too low, not waypoint count), so finer waypoints are safe here.
+const float PATH_RESOLUTION = 2.0f;
 
 // =============================================================================
 // STEP TIMING
 // =============================================================================
-const int STEP_DELAY_MS = 2;                 // ms per stepper step. 2 seems to be the limit
+const int STEP_DELAY_MS = 2;
 
 // =============================================================================
 // PI LINK CONFIG
 // =============================================================================
-const uint32_t PI_BAUD             = 115200;
-const size_t   PI_RX_BUF_SIZE      = 2048;   // ESP32 RX buffer (default 256 too small)
-const size_t   PI_FRAME_MAX        = 64;     // max chars between < and >
-const float    PI_WORKSPACE_RADIUS = 67.5f;  // 135 mm diameter circle
-const float    PI_WORKSPACE_SLACK  = 1.10f;  // 10% slack for rounding/noise
-const uint32_t POS_REPORT_PERIOD_MS = 100;   // 10 Hz position reports during moves
+const uint32_t PI_BAUD              = 115200;
+const size_t   PI_RX_BUF_SIZE       = 2048;
+const size_t   PI_FRAME_MAX         = 64;
+const float    PI_WORKSPACE_RADIUS  = 67.5f;
+const float    PI_WORKSPACE_SLACK   = 1.10f;
+const uint32_t POS_REPORT_PERIOD_MS = 50;   // 20 Hz idle reports
+
+// How often (in stepper steps) to check for a preempting target inside
+// the inner stepping loop. Too low = wastes time checking; too high =
+// laggy preemption. 32 steps ≈ 0.57 mm of arm extension.
+const int     PREEMPT_CHECK_EVERY_N_STEPS = 32;
 
 // =============================================================================
 // OBJECTS & STATE
@@ -95,11 +112,10 @@ ezButton limitSwitch(LIMIT_SWITCH_PIN);
 Servo    myservo;
 
 struct State {
-  float x, y;         // Current Cartesian work position (mm)
-  long  stepperSteps; // Current absolute stepper step count
+  float x, y;          // last reached Cartesian work position (mm)
+  long  stepperSteps;  // current absolute stepper step count
 } current;
 
-// Pi protocol state
 struct PendingTarget {
   float x, y;
   bool  valid;
@@ -116,13 +132,11 @@ static uint32_t lastPosReportMs = 0;
 // =============================================================================
 void homeStepper();
 void ejectArm();
-void moveTo(float targetX, float targetY);
+bool moveTo(float targetX, float targetY);   // true=completed, false=preempted
 void stepMotor(int direction);
 void cartesianToPolar(float x, float y, float &r, float &theta);
 int  servoAngleToMicros(float angleDeg);
 void printStatus();
-void testPlus();
-void testDiamond();
 void handleSerialInput();
 void pumpPiRx();
 void handlePiFrame(const char* payload);
@@ -130,22 +144,20 @@ void sendAck(uint32_t id);
 void sendPos(float x, float y);
 void sendErr(const char* msg);
 void maybeSendPosReport();
+bool pendingDiffersFrom(float x, float y);
 
 // =============================================================================
 // SETUP
 // =============================================================================
 void setup() {
-  Serial.begin(115200);                        // USB debug
+  Serial.begin(115200);
 
-  // Enlarge Serial0 RX buffer BEFORE begin() so commands sent during a
-  // long move don't overflow. 2 KB ≈ 130 frames at 15 bytes each.
   Serial0.setRxBufferSize(PI_RX_BUF_SIZE);
-  Serial0.begin(PI_BAUD);                      // Pi link on D0/D1
+  Serial0.begin(PI_BAUD);
 
   limitSwitch.setDebounceTime(50);
   myservo.attach(SERVO_PIN, SERVO_MIN_PULSE, SERVO_MAX_PULSE);
 
-  //center servo
   myservo.writeMicroseconds(servoAngleToMicros(90.0f + SERVO_ANGLE_OFFSET + SERVO_MOUNT_TRIM));
 
   pinMode(STEPPER_PIN1, OUTPUT);
@@ -158,46 +170,40 @@ void setup() {
   ejectArm();
   homeStepper();
 
-  current.x = -X_OFFSET;                   // = -10.0
-  current.y = MIN_EXTENSION - Y_OFFSET;    // = 48 - 124 = -76.0
+  current.x = -X_OFFSET;
+  current.y = MIN_EXTENSION - Y_OFFSET;
   Serial.println("Moving to (0,0)...");
-  moveTo(0.0f, 0.0f);                      // now has a real distance → actually moves
+  moveTo(0.0f, 0.0f);
   printStatus();
   delay(1000);
   Serial.println("Entering Loop...");
 
-  // Tell the Pi we're ready (framed so the Pi parser consumes it cleanly).
   Serial0.print("<ERR:boot>\n");
 }
 
 // =============================================================================
 // LOOP
-//
-// Pi commands are the primary path. handleSerialInput() is left as a
-// non-blocking fallback for manual testing via USB Serial Monitor.
 // =============================================================================
 void loop() {
-  // 1. Drain Pi RX into `pending` (latest target wins).
   pumpPiRx();
-
-  // 2. Also accept manual commands typed in USB Serial Monitor.
   handleSerialInput();
 
-  // 3. If we have a fresh target, execute it.
   if (pending.valid) {
     PendingTarget cmd = pending;
-    pending.valid = false;            // consumed; new frames will overwrite it
+    pending.valid = false;            // consumed; new frames will overwrite
 
-    moveTo(cmd.x, cmd.y);
+    bool completed = moveTo(cmd.x, cmd.y);
+
+    // Always report state to Pi after a motion phase (completed OR
+    // preempted). The Pi treats both identically — a new ACK + POS.
     piCmdId++;
     sendAck(piCmdId);
     sendPos(current.x, current.y);
 
-    Serial.print("[Pi cmd "); Serial.print(piCmdId);
-    Serial.print("] X="); Serial.print(cmd.x, 2);
-    Serial.print(" Y="); Serial.println(cmd.y, 2);
+    // Note: not printing to USB Serial during fast tracking. Serial.print
+    // calls have measurable overhead and would slow the loop noticeably.
+    (void)completed;
   } else {
-    // 4. Idle position reports so the Pi's HUD stays fresh.
     maybeSendPosReport();
   }
 }
@@ -235,21 +241,14 @@ void maybeSendPosReport() {
 
 // =============================================================================
 // PI LINK — INBOUND FRAME PARSING
-//
-// Byte-by-byte state machine. Tolerates garbage outside frames, partial
-// frames spanning loop iterations, and overlong frames (resets cleanly).
-// Updates `pending` with the latest target — does NOT call moveTo here,
-// because the loop owns motion.
 // =============================================================================
 void handlePiFrame(const char* payload) {
-  // Expect "X,Y" — two floats separated by a comma.
   const char* comma = strchr(payload, ',');
   if (!comma) {
     sendErr("bad_frame_no_comma");
     return;
   }
 
-  // Split into two C-strings in a local buffer.
   char buf[PI_FRAME_MAX];
   strncpy(buf, payload, sizeof(buf) - 1);
   buf[sizeof(buf) - 1] = '\0';
@@ -267,16 +266,11 @@ void handlePiFrame(const char* payload) {
     return;
   }
 
-  // Soft sanity clamp for the 135 mm circular workspace. The Pi already
-  // gates this, but a second check on the firmware side is cheap insurance
-  // against garbled frames commanding wild moves.
   if (x * x + y * y > PI_WORKSPACE_RADIUS * PI_WORKSPACE_RADIUS * PI_WORKSPACE_SLACK) {
     sendErr("out_of_bounds");
     return;
   }
 
-  // Update pending target. The main loop will pick this up after the
-  // current moveTo (if any) returns.
   pending.x = x;
   pending.y = y;
   pending.valid = true;
@@ -291,7 +285,7 @@ void pumpPiRx() {
       piRxLen = 0;
       continue;
     }
-    if (!piInFrame) continue;       // ignore noise between frames
+    if (!piInFrame) continue;
 
     if (c == '>') {
       piRxBuf[piRxLen] = '\0';
@@ -301,7 +295,7 @@ void pumpPiRx() {
       continue;
     }
 
-    if (piRxLen >= PI_FRAME_MAX - 1) {  // overflow — drop frame
+    if (piRxLen >= PI_FRAME_MAX - 1) {
       piInFrame = false;
       piRxLen = 0;
       sendErr("frame_too_long");
@@ -311,13 +305,16 @@ void pumpPiRx() {
   }
 }
 
+// True if a new pending target exists AND it's meaningfully different
+// from (x, y). Tolerance avoids preempting on identical retransmissions
+// from the Pi's serial worker.
+bool pendingDiffersFrom(float x, float y) {
+  if (!pending.valid) return false;
+  return (fabsf(pending.x - x) > 0.05f || fabsf(pending.y - y) > 0.05f);
+}
+
 // =============================================================================
 // SERIAL COMMAND HANDLER (USB, non-blocking)
-//
-// Originally blocked with `while (!Serial.available())`. Made non-blocking
-// so the Pi link runs in parallel. Type "x,y" in Serial Monitor and press
-// Enter for manual testing. Manual commands also go through `pending` so
-// they get the same workspace clamp as Pi commands.
 // =============================================================================
 void handleSerialInput() {
   if (!Serial.available()) return;
@@ -339,7 +336,6 @@ void handleSerialInput() {
   float x = input.substring(0, commaIndex).toFloat();
   float y = input.substring(commaIndex + 1).toFloat();
 
-  // Same workspace clamp the Pi link uses.
   if (x * x + y * y > PI_WORKSPACE_RADIUS * PI_WORKSPACE_RADIUS * PI_WORKSPACE_SLACK) {
     Serial.println(F("ERROR: target outside 135 mm workspace"));
     return;
@@ -353,59 +349,8 @@ void handleSerialInput() {
   pending.valid = true;
 }
 
-
-void testDiamond() {
-  moveTo(40, 0);
-  printStatus();
-  delay(1000);
-  moveTo(0, 40);
-  printStatus();
-  delay(1000);
-  moveTo(-40, 0);
-  printStatus();
-  delay(1000);
-  moveTo(0, -40);
-  printStatus();
-  delay(1000);
-}
-
-void testPlus() {
-  moveTo(0, 0);
-  printStatus();
-  delay(1000);
-
-  moveTo(-40, 0);
-  printStatus();
-  delay(1000);
-
-  moveTo(0, 0);
-  printStatus();
-  delay(1000);
-
-  moveTo(40, 0);
-  printStatus();
-  delay(1000);
-
-  moveTo(0, 0);
-  printStatus();
-  delay(1000);
-
-  moveTo(0, 40);
-  printStatus();
-  delay(1000);
-
-  moveTo(0, 0);
-  printStatus();
-  delay(1000);
-
-  moveTo(0, -40);
-  printStatus();
-  delay(1000);
-}
-
 // =============================================================================
 // CARTESIAN → POLAR CONVERSION
-// Applies the physical pivot offset before converting.
 // =============================================================================
 void cartesianToPolar(float x, float y, float &r, float &theta) {
   float relX = x + X_OFFSET;
@@ -416,7 +361,6 @@ void cartesianToPolar(float x, float y, float &r, float &theta) {
 
 // =============================================================================
 // SERVO ANGLE → MICROSECONDS
-// Floating-point conversion to avoid integer truncation across the 270° range.
 // =============================================================================
 int servoAngleToMicros(float angleDeg) {
   float clamped = constrain(angleDeg, SERVO_MIN_DEG, SERVO_MAX_DEG);
@@ -426,63 +370,90 @@ int servoAngleToMicros(float angleDeg) {
 }
 
 // =============================================================================
-// MOVETO
+// MOVETO  (preemptive)
 //
-// Walks the straight line from current position to (targetX, targetY) in
-// PATH_RESOLUTION steps. At each waypoint:
-//   1. Convert interpolated (x, y) → polar (r, θ)
-//   2. Write servo to θ (with coordinate and mounting offsets applied)
-//   3. Step stepper at fixed STEP_DELAY_MS until arm reaches target extension
+// Returns true if completed normally, false if preempted by a fresher
+// pending target. In either case `current.x/y` reflect a valid (last
+// reached) physical position when the function returns.
 //
-// MODIFIED: pumps the Pi RX buffer between waypoints so commands sent
-// during the move don't overflow Serial0's RX buffer, and emits periodic
-// position reports so the Pi's HUD stays live during long moves.
+// Preemption checks happen at two granularities:
+//   1. Between waypoints (fast, frequent)
+//   2. Inside the inner step loop, every PREEMPT_CHECK_EVERY_N_STEPS
+//      steps (so even a single long-extension waypoint can be aborted)
 // =============================================================================
-void moveTo(float targetX, float targetY) {
-  float dx       = targetX - current.x;
-  float dy       = targetY - current.y;
-  float distance = sqrt(dx * dx + dy * dy);
-  if (distance < 0.001f) return;
+bool moveTo(float targetX, float targetY) {
+  const float startX = current.x;
+  const float startY = current.y;
+  const float dx     = targetX - startX;
+  const float dy     = targetY - startY;
+  const float distance = sqrt(dx * dx + dy * dy);
+  if (distance < 0.001f) return true;
 
-  int numWaypoints = (int)ceil(distance / PATH_RESOLUTION);
+  const int numWaypoints = (int)ceil(distance / PATH_RESOLUTION);
 
   for (int i = 1; i <= numWaypoints; i++) {
-    // Keep the Pi RX buffer drained during long moves so we don't
-    // overflow. Frames received here update `pending` for AFTER this
-    // move completes — they don't preempt the current motion.
     pumpPiRx();
     maybeSendPosReport();
 
-    float t       = (float)i / (float)numWaypoints;
-    float interpX = current.x + dx * t;
-    float interpY = current.y + dy * t;
+    // --- Preemption check between waypoints ---
+    if (pendingDiffersFrom(targetX, targetY)) {
+      // We have completed (i-1)/numWaypoints of the line. current.x/y
+      // was last updated at the end of the previous iteration, so it's
+      // already correct.
+      return false;
+    }
 
-    // Convert to polar
+    // Compute this waypoint's position from the FUNCTION-ENTRY origin
+    // (startX, startY). This avoids accumulating floating-point drift.
+    const float t = (float)i / (float)numWaypoints;
+    const float interpX = startX + dx * t;
+    const float interpY = startY + dy * t;
+
+    // --- Servo angle ---
     float r, theta;
     cartesianToPolar(interpX, interpY, r, theta);
-
-    // Write servo
-    float angle = theta + SERVO_ANGLE_OFFSET + SERVO_MOUNT_TRIM;
+    const float angle = theta + SERVO_ANGLE_OFFSET + SERVO_MOUNT_TRIM;
     myservo.writeMicroseconds(servoAngleToMicros(angle));
 
-    // Step stepper to match required extension
-    float extension  = constrain(r - MIN_EXTENSION, 0.0f, MAX_EXTENSION - MIN_EXTENSION);
-    long  targetSteps = (long)(extension * STEPS_PER_MM);
+    // --- Step extension toward this waypoint ---
+    const float extension = constrain(r - MIN_EXTENSION, 0.0f, MAX_EXTENSION - MIN_EXTENSION);
+    const long  targetSteps = (long)(extension * STEPS_PER_MM);
 
+    int stepsSinceCheck = 0;
     while (current.stepperSteps != targetSteps) {
-      int direction = (current.stepperSteps < targetSteps) ? 1 : -1;
+      const int direction = (current.stepperSteps < targetSteps) ? 1 : -1;
       stepMotor(direction);
       current.stepperSteps += direction;
       delay(STEP_DELAY_MS);
+
+      // --- Preemption check inside the step loop ---
+      if (++stepsSinceCheck >= PREEMPT_CHECK_EVERY_N_STEPS) {
+        stepsSinceCheck = 0;
+        pumpPiRx();
+        if (pendingDiffersFrom(targetX, targetY)) {
+          // Mid-waypoint preempt: report the LAST completed waypoint as
+          // current position. The next moveTo will close any small gap.
+          const float t_done = (float)(i - 1) / (float)numWaypoints;
+          current.x = startX + dx * t_done;
+          current.y = startY + dy * t_done;
+          return false;
+        }
+      }
     }
+
+    // Successfully reached this waypoint. Commit position.
+    current.x = interpX;
+    current.y = interpY;
   }
 
+  // Final endpoint snap (eliminates any 1-step rounding drift).
   current.x = targetX;
   current.y = targetY;
+  return true;
 }
 
 // =============================================================================
-// STEP MOTOR — Full-step drive (2 coils active, ~40% more torque than wave)
+// STEP MOTOR
 // =============================================================================
 void stepMotor(int direction) {
   static int stepIndex = 0;
@@ -499,7 +470,7 @@ void stepMotor(int direction) {
 }
 
 // =============================================================================
-// HOME STEPPER — Retract until limit switch triggers
+// HOME STEPPER
 // =============================================================================
 void homeStepper() {
   Serial.println("Homing...");
@@ -514,12 +485,11 @@ void homeStepper() {
 }
 
 // =============================================================================
-// EJECT ARM — Extend until limit switch releases
+// EJECT ARM
 // =============================================================================
 void ejectArm() {
   Serial.println("Ejecting...");
 
-  //no matter what state the limit switch is in, eject for 1/2 rotation first in case its stuck on the switch
   for (int i = 0; i < STEPS_PER_REV/2; i++) {
     stepMotor(1);
     delay(2);
