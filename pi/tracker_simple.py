@@ -53,7 +53,7 @@ from libcamera import controls
 # ============================================================
 # How far ahead/aside of the tracked point the gantry should sit, in mm.
 OFFSET_X_MM = 0.0
-OFFSET_Y_MM = 15.0
+OFFSET_Y_MM = -15.0
 
 # Camera focus.
 # Camera Module 3 has motorized focus. The control is a "lens position"
