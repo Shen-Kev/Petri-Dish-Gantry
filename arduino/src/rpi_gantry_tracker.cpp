@@ -55,8 +55,8 @@ const float MIN_EXTENSION         = Y_LIMIT_SWITCH_OFFSET;
 const float MAX_EXTENSION         = 200.0f;  // mm, maximum physical reach
 
 //const float X_OFFSET       = 8.0f;           // mm, pivot → work origin
-const float X_OFFSET = 10.0f;
-const float Y_OFFSET       = 124.0f;         // mm, pivot → work origin
+const float X_OFFSET = 15.0f;
+const float Y_OFFSET       = 120.0f;         // mm, pivot → work origin
 
 const int   SERVO_MIN_PULSE = 500;            // µs → SERVO_MIN_DEG
 const int   SERVO_MAX_PULSE = 2500;           // µs → SERVO_MAX_DEG
