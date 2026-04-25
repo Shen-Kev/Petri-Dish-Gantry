@@ -65,7 +65,7 @@ OFFSET_Y_MM = 0.0
 #   10.0 = ~10 cm (macro)
 # Press ',' / '.' at runtime to nudge in 0.25 dioptre steps.
 USE_AUTOFOCUS = False           # True = continuous AF, False = manual fixed
-MANUAL_FOCUS_DIOPTRES = 5.0     # only used if USE_AUTOFOCUS is False
+MANUAL_FOCUS_DIOPTRES = 10.0     # only used if USE_AUTOFOCUS is False
 
 # HSV color-mask tolerance. Tweak with [/] hotkeys at runtime.
 HSV_TOL_H = 10
