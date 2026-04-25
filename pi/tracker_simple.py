@@ -50,7 +50,7 @@ from picamera2 import Picamera2
 # How far ahead/aside of the tracked point the gantry should sit, in mm.
 # Positive X is whatever +X means in your workspace_calibration. Same for Y.
 OFFSET_X_MM = 0.0
-OFFSET_Y_MM = 10.0
+OFFSET_Y_MM = 0.0
 
 # HSV color-mask tolerance. Wider = more permissive (catches more pixels of
 # similar shades). Tweak with [ and ] hotkeys at runtime; final value can
