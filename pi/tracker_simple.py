@@ -11,9 +11,10 @@ Pipeline per frame:
   3. Convert to HSV; mask pixels near the sampled color.
   4. Find the largest connected blob; take its centroid.
   5. Map centroid pixel -> world mm via the saved homography.
-  6. Apply hardcoded (OFFSET_X_MM, OFFSET_Y_MM) to compute the gantry target.
-  7. Clamp to the 135 mm circular workspace; enqueue for the serial thread.
-  8. Display: live undistorted feed, mask overlay, crosshair on the tracked
+  6. Apply small EMA smoothing to suppress per-frame centroid jitter.
+  7. Apply hardcoded (OFFSET_X_MM, OFFSET_Y_MM) to compute the gantry target.
+  8. Clamp to the 135 mm circular workspace; enqueue for the serial thread.
+  9. Display: live undistorted feed, mask overlay, crosshair on the tracked
      point, world coords, offset, and gantry HUD.
 
 Workflow:
@@ -21,6 +22,8 @@ Workflow:
     First click arms tracking; subsequent clicks retarget.
   - 'm' toggles the mask overlay (useful for tuning).
   - '[' and ']' shrink/grow the HSV color tolerance.
+  - ',' and '.' adjust focus (closer / farther). Hold to scan.
+  - 'a' toggles auto-focus.
   - SPACE pauses/unpauses sending commands to the gantry.
   - 'q' or Ctrl+C quits cleanly.
 
@@ -43,24 +46,39 @@ import cv2
 import numpy as np
 import serial
 from picamera2 import Picamera2
+from libcamera import controls
 
 # ============================================================
 # CONFIG — EDIT ME
 # ============================================================
 # How far ahead/aside of the tracked point the gantry should sit, in mm.
-# Positive X is whatever +X means in your workspace_calibration. Same for Y.
 OFFSET_X_MM = 0.0
 OFFSET_Y_MM = 0.0
 
-# HSV color-mask tolerance. Wider = more permissive (catches more pixels of
-# similar shades). Tweak with [ and ] hotkeys at runtime; final value can
-# be hardcoded here once you find what works.
-HSV_TOL_H = 10     # Hue tolerance (OpenCV hue range is 0..179)
-HSV_TOL_S = 60     # Saturation tolerance (0..255)
-HSV_TOL_V = 60     # Value tolerance (0..255)
+# Camera focus.
+# Camera Module 3 has motorized focus. The control is a "lens position"
+# in dioptres: 0.0 = infinity, larger values = closer focus.
+# Useful starting values:
+#   0.0  = infinity (very far)
+#   2.0  = ~50 cm
+#   5.0  = ~20 cm
+#   10.0 = ~10 cm (macro)
+# Press ',' / '.' at runtime to nudge in 0.25 dioptre steps.
+USE_AUTOFOCUS = False           # True = continuous AF, False = manual fixed
+MANUAL_FOCUS_DIOPTRES = 5.0     # only used if USE_AUTOFOCUS is False
+
+# HSV color-mask tolerance. Tweak with [/] hotkeys at runtime.
+HSV_TOL_H = 10
+HSV_TOL_S = 60
+HSV_TOL_V = 60
 
 # Minimum blob area in pixels — anything smaller is ignored as noise.
 MIN_BLOB_AREA_PX = 50
+
+# EMA smoothing on the world-mm output. Larger = more responsive but
+# jitterier; smaller = smoother but laggy. 0.5 is a good middle ground.
+# Set to 1.0 to disable smoothing entirely.
+WORLD_SMOOTHING_ALPHA = 0.5
 
 # ============================================================
 # CONFIG — usually no need to edit
@@ -76,7 +94,11 @@ WORKSPACE_RADIUS_MM   = WORKSPACE_DIAMETER_MM / 2
 SERIAL_PORT       = "/dev/ttyAMA0"
 SERIAL_BAUD       = 115200
 SERIAL_TIMEOUT_S  = 0.05
-COMMAND_PERIOD_S  = 0.02   # 50 Hz cap on outbound commands
+
+# How much to nudge focus per ',' / '.' press, in dioptres
+FOCUS_STEP = 0.25
+FOCUS_MIN  = 0.0
+FOCUS_MAX  = 15.0   # camera module 3 supports up to ~15 dioptres
 
 # ============================================================
 # GLOBALS
@@ -92,9 +114,8 @@ arduino_state = {
     "last_rx_time": 0.0,
 }
 
-# Sample state mutated by the mouse callback. None until first click.
-sampled_hsv = None  # (h, s, v) tuple or None
-last_click_px = None  # (x, y) for visual feedback
+sampled_hsv = None
+last_click_px = None
 
 
 # ============================================================
@@ -123,11 +144,7 @@ def pixel_to_world(px, py, H):
 # Color-blob detection
 # ============================================================
 def make_mask(hsv_frame, sample_hsv, tol_h, tol_s, tol_v):
-    """Build a binary mask of pixels near sample_hsv.
-
-    Hue wraps at 180 in OpenCV (red sits at both ~0 and ~179), so we
-    handle wrap-around with two ranges OR'd together when needed.
-    """
+    """Build a binary mask of pixels near sample_hsv, with red-wrap handling."""
     h0, s0, v0 = sample_hsv
     s_lo = max(0, s0 - tol_s); s_hi = min(255, s0 + tol_s)
     v_lo = max(0, v0 - tol_v); v_hi = min(255, v0 + tol_v)
@@ -136,7 +153,6 @@ def make_mask(hsv_frame, sample_hsv, tol_h, tol_s, tol_v):
     h_hi = h0 + tol_h
 
     if h_lo < 0:
-        # wrap: e.g. red at h=5 with tol=10 -> [175..179] OR [0..15]
         m1 = cv2.inRange(hsv_frame, (h_lo + 180, s_lo, v_lo), (179, s_hi, v_hi))
         m2 = cv2.inRange(hsv_frame, (0, s_lo, v_lo), (h_hi, s_hi, v_hi))
         mask = cv2.bitwise_or(m1, m2)
@@ -147,7 +163,6 @@ def make_mask(hsv_frame, sample_hsv, tol_h, tol_s, tol_v):
     else:
         mask = cv2.inRange(hsv_frame, (h_lo, s_lo, v_lo), (h_hi, s_hi, v_hi))
 
-    # Clean up: erode noise, dilate to fill small gaps inside the blob.
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -155,7 +170,6 @@ def make_mask(hsv_frame, sample_hsv, tol_h, tol_s, tol_v):
 
 
 def detect_blob(mask):
-    """Return (cx, cy, area_px) of the largest blob, or None."""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
@@ -184,7 +198,6 @@ def on_mouse(event, x, y, flags, param):
     h, w = hsv_frame.shape[:2]
     if not (0 <= x < w and 0 <= y < h):
         return
-    # Average a small 5x5 patch around the click for noise robustness.
     x0, x1 = max(0, x - 2), min(w, x + 3)
     y0, y1 = max(0, y - 2), min(h, y + 3)
     patch = hsv_frame[y0:y1, x0:x1].reshape(-1, 3).astype(np.float32)
@@ -194,6 +207,28 @@ def on_mouse(event, x, y, flags, param):
                    int(round(mean_hsv[2])))
     last_click_px = (x, y)
     print(f"[sample] clicked ({x},{y}) -> HSV {sampled_hsv}")
+
+
+# ============================================================
+# Camera focus control
+# ============================================================
+def set_camera_focus(picam, autofocus, dioptres):
+    """Configure focus on Camera Module 3.
+
+    Camera Module 3 has a motorized lens controlled in dioptres:
+      0 = infinity, larger = closer.
+    AfMode 0 = manual, 2 = continuous autofocus.
+    """
+    if autofocus:
+        picam.set_controls({"AfMode": controls.AfModeEnum.Continuous})
+        print("[focus] autofocus ON (continuous)")
+    else:
+        d = float(max(FOCUS_MIN, min(FOCUS_MAX, dioptres)))
+        picam.set_controls({
+            "AfMode": controls.AfModeEnum.Manual,
+            "LensPosition": d,
+        })
+        print(f"[focus] manual @ {d:.2f} dioptres")
 
 
 # ============================================================
@@ -228,6 +263,10 @@ def handle_arduino_message(payload: str) -> None:
 
 # ============================================================
 # Serial worker (bidirectional, non-blocking)
+#
+# Note: no longer rate-throttles outbound commands. Every fresh target
+# is shipped immediately. Combined with Arduino-side preemption, this
+# means the gantry is always heading toward the latest known position.
 # ============================================================
 def serial_worker(port, baud):
     try:
@@ -245,7 +284,6 @@ def serial_worker(port, baud):
     print(f"[serial] connected {port} @ {baud}")
 
     rx_buf = bytearray()
-    last_send = 0.0
 
     try:
         while not shutdown_event.is_set():
@@ -266,16 +304,9 @@ def serial_worker(port, baud):
                         print(f"[arduino-raw] {s!r}")
 
             try:
-                tx, ty = target_queue.get_nowait()
+                tx, ty = target_queue.get(timeout=0.005)
             except queue.Empty:
-                time.sleep(0.002)
                 continue
-
-            now = time.monotonic()
-            dt = now - last_send
-            if dt < COMMAND_PERIOD_S:
-                time.sleep(COMMAND_PERIOD_S - dt)
-            last_send = time.monotonic()
 
             msg = f"<{tx:.2f},{ty:.2f}>\n"
             try:
@@ -327,6 +358,11 @@ def main():
     picam.start()
     time.sleep(0.5)
 
+    # Apply focus settings (auto-exposure intentionally left as default = on)
+    autofocus = USE_AUTOFOCUS
+    focus_dioptres = MANUAL_FOCUS_DIOPTRES
+    set_camera_focus(picam, autofocus, focus_dioptres)
+
     print("[init] starting serial thread...")
     t_serial = threading.Thread(
         target=serial_worker, args=(SERIAL_PORT, SERIAL_BAUD), daemon=True
@@ -335,8 +371,6 @@ def main():
 
     win = "Tracker (simple)"
     cv2.namedWindow(win)
-    # Mouse callback closure shares a dict so we can update the HSV frame
-    # reference each iteration (callback fires asynchronously).
     cb_param = {"hsv": None}
     cv2.setMouseCallback(win, on_mouse, cb_param)
 
@@ -344,17 +378,19 @@ def main():
     sending_enabled = True
     tol_h, tol_s, tol_v = HSV_TOL_H, HSV_TOL_S, HSV_TOL_V
 
+    smoothed_world = None  # (wx, wy) EMA state
+
     fps_t0, fps_n, fps = time.monotonic(), 0, 0.0
     print("Click on the colored marker to start tracking.")
-    print("Hotkeys: m=toggle mask, [/]=shrink/grow tolerance, "
-          "SPACE=pause sending, q=quit")
+    print("Hotkeys: m=mask, [/]=tolerance, ,/.=focus -/+, "
+          "a=autofocus toggle, SPACE=pause sending, q=quit")
 
     try:
         while not shutdown_event.is_set():
             frame = picam.capture_array()
             undistorted = cv2.remap(frame, map1, map2, cv2.INTER_LINEAR)
             hsv = cv2.cvtColor(undistorted, cv2.COLOR_BGR2HSV)
-            cb_param["hsv"] = hsv  # callback can now sample from this frame
+            cb_param["hsv"] = hsv
 
             display = undistorted.copy()
             blob = None
@@ -364,7 +400,6 @@ def main():
                 blob = detect_blob(mask)
 
                 if show_mask:
-                    # Tint the mask in green and blend it on top of the feed.
                     overlay = display.copy()
                     overlay[mask > 0] = (0, 255, 0)
                     display = cv2.addWeighted(display, 0.6, overlay, 0.4, 0)
@@ -373,25 +408,34 @@ def main():
                     cx, cy, area = blob
                     wx, wy = pixel_to_world(cx, cy, H)
 
-                    # Crosshair on the tracked point
+                    # EMA smoothing on world coordinate. Cuts per-frame
+                    # centroid jitter that otherwise causes the gantry
+                    # to hunt and chatter.
+                    if smoothed_world is None or WORLD_SMOOTHING_ALPHA >= 1.0:
+                        smoothed_world = (wx, wy)
+                    else:
+                        a = WORLD_SMOOTHING_ALPHA
+                        smoothed_world = (
+                            a * wx + (1 - a) * smoothed_world[0],
+                            a * wy + (1 - a) * smoothed_world[1],
+                        )
+                    swx, swy = smoothed_world
+
                     cv2.drawMarker(display, (int(cx), int(cy)),
                                    (0, 0, 255), cv2.MARKER_CROSS, 30, 2)
                     cv2.circle(display, (int(cx), int(cy)), 18, (0, 0, 255), 2)
 
-                    # Compute and send target if inside the workspace
-                    target_x = wx + OFFSET_X_MM
-                    target_y = wy + OFFSET_Y_MM
+                    target_x = swx + OFFSET_X_MM
+                    target_y = swy + OFFSET_Y_MM
                     in_bounds = (target_x ** 2 + target_y ** 2
                                  <= WORKSPACE_RADIUS_MM ** 2)
 
                     if in_bounds and sending_enabled:
                         enqueue_latest((target_x, target_y))
 
-                    # Draw a small marker where the gantry is being told to go
-                    # (only meaningful if we can map mm back to pixels — skip).
                     color_pt = (0, 255, 0) if in_bounds else (0, 0, 255)
                     cv2.putText(display,
-                                f"point  ({wx:+6.1f}, {wy:+6.1f}) mm",
+                                f"point  ({swx:+6.1f}, {swy:+6.1f}) mm",
                                 (10, 85), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.6, color_pt, 2)
                     cv2.putText(display,
@@ -400,6 +444,7 @@ def main():
                                 (10, 110), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.6, color_pt, 2)
                 else:
+                    smoothed_world = None
                     cv2.putText(display, "no blob (try clicking again or '[/]')",
                                 (10, 85), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.6, (0, 165, 255), 2)
@@ -408,7 +453,7 @@ def main():
                             (10, 85), cv2.FONT_HERSHEY_SIMPLEX,
                             0.6, (0, 255, 255), 2)
 
-            # HUD: FPS, sampled color, tolerances, offsets, gantry state
+            # HUD lines
             fps_n += 1
             if fps_n >= 10:
                 now = time.monotonic()
@@ -423,6 +468,13 @@ def main():
             cv2.putText(display, sample_str, (10, 55),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                         (255, 255, 255), 1)
+
+            focus_str = (f"focus: AUTO" if autofocus
+                         else f"focus: manual {focus_dioptres:.2f} dpt")
+            cv2.putText(display, focus_str,
+                        (FRAME_WIDTH - 280, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                        (255, 255, 255), 2)
 
             cv2.putText(display,
                         f"offset ({OFFSET_X_MM:+.1f}, {OFFSET_Y_MM:+.1f}) mm   "
@@ -448,7 +500,6 @@ def main():
                             (10, FRAME_HEIGHT - 15),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)
 
-            # Show last click location briefly
             if last_click_px is not None:
                 cv2.circle(display, last_click_px, 6, (255, 255, 0), 1)
 
@@ -471,6 +522,20 @@ def main():
             elif key == ord(' '):
                 sending_enabled = not sending_enabled
                 print(f"[send] {'ENABLED' if sending_enabled else 'PAUSED'}")
+            elif key == ord(','):
+                # focus closer (more dioptres) — wait, convention: ',' = farther
+                # Standard convention: ',' looks like '<' (back/farther)
+                # and '.' looks like '>' (forward/closer). Use that.
+                autofocus = False
+                focus_dioptres = max(FOCUS_MIN, focus_dioptres - FOCUS_STEP)
+                set_camera_focus(picam, autofocus, focus_dioptres)
+            elif key == ord('.'):
+                autofocus = False
+                focus_dioptres = min(FOCUS_MAX, focus_dioptres + FOCUS_STEP)
+                set_camera_focus(picam, autofocus, focus_dioptres)
+            elif key == ord('a'):
+                autofocus = not autofocus
+                set_camera_focus(picam, autofocus, focus_dioptres)
     finally:
         shutdown_event.set()
         t_serial.join(timeout=2.0)
