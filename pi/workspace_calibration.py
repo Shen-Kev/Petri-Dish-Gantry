@@ -40,10 +40,10 @@ FRAME_HEIGHT      = 720
 
 # World coords (mm) of the 4 fiducials, matched to click order A,B,C,D
 WORLD_POINTS = np.array([
-    [ 67.5,   0.0],   # A: +X 
-    [  0.0,  67.5],   # B: +Y 
-    [-67.5,   0.0],   # C: -X 
-    [  0.0, 0.0],   # D: center (can't see bottom)
+    [ 60.85,   16.3],   # A: top right
+    [  -60.85,  16.3],   # B: top left
+    [60.85,   -16.3],   # C: bottom right
+    [  -60.85, -16.3],   # D: bottom left
 ], dtype=np.float32)
 
 clicked_points = []
