@@ -72,8 +72,8 @@ The result is a closed-loop tracking system where the gantry tracks a moving tar
  │  │  (non-blocking I/O)     │────┼─────────┼──┤ Stepper (D4-D7)    │     │
  │  └─────────────────────────┘    │         │  │ Servo (D3)         │     │
  │                                 │         │  │ Limit switch (D12) │     │
- │  Camera Module 3 (looking up    │         │  └────────────────────┘     │
- │  at the workspace from below)   │         │                             │
+ │  Camera Module 3 (looking down  │         │  └────────────────────┘     │
+ │  at the workspace).             │         │                             │
  └─────────────────────────────────┘         └─────────────────────────────┘
 ```
 
@@ -426,8 +426,6 @@ Output: `workspace_calibration.npz` containing the homography matrix `H` plus th
 
 ### Verifying axis signs
 
-The camera looks **up** at the workspace, which produces a mirror image compared to a top-down view. It's easy to end up with one axis inverted. **Always verify before trusting the calibration:**
-
 1. Place a marker at the center of the workspace.
 2. With the gantry powered and the Pi-Arduino link wired, send a known command:
    ```bash
@@ -734,7 +732,7 @@ Check, in order: (1) TX/RX wires swapped — try swapping them on one end; (2) E
 The Pi is computing world coordinates outside the 67.5 mm radius. Your workspace calibration is likely scaled wrong — re-run `workspace_calibration.py` and double-check the fiducial positions.
 
 **Gantry moves in the wrong direction.**
-Axis is inverted from the upward-looking camera view. Re-run `workspace_calibration.py` and click the opposite fiducial when prompted for that axis.
+Re-run `workspace_calibration.py` and click the opposite fiducial when prompted for that axis.
 
 **Gantry hunts / chatters on a stationary target.**
 Tune `WORLD_SMOOTHING_ALPHA` in `tracker_simple.py` lower (e.g., 0.3) for more smoothing. If still jittery, your color mask may be drifting frame-to-frame — press `m` to inspect the mask and tighten tolerance with `[`.
