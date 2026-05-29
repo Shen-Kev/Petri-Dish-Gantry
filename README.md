@@ -1,8 +1,8 @@
 # Petri Dish Gantry
 
-A vision-based tracking system that drives a polar gantry to follow objects on a circular workspace. The gantry is designed to manipulate biohybrid robots — e.g., by positioning an electromagnet beneath a 135 mm petri dish — but the tracking and motion architecture is general purpose.
+A vision-based tracking system that drives a polar gantry to follow objects on a circular workspace. The gantry is designed to manipulate biohybrid robots by moving a collimator over a 135 mm petri dish — but the tracking and motion architecture is general purpose.
 
-A Raspberry Pi 5 with a Camera Module 3 looks **up** at the workspace from beneath, identifies the target (a colored marker, or eventually a YOLO-detected biohybrid robot), transforms its pixel position into real-world millimeters, and continuously commands an Arduino Nano ESP32 over UART. The ESP32 drives a polar gantry (stepper for radial extension, servo for rotation) to track the target with a configurable offset.
+A Raspberry Pi 5 with a Camera Module 3 looks **down** at the workspace from above, identifies the target (a colored marker, or eventually a YOLO-detected biohybrid robot), transforms its pixel position into real-world millimeters, and continuously commands an Arduino Nano ESP32 over UART. The ESP32 drives a polar gantry (stepper for radial extension, servo for rotation) to track the target with a configurable offset.
 
 ---
 
@@ -43,7 +43,7 @@ A Raspberry Pi 5 with a Camera Module 3 looks **up** at the workspace from benea
 
 The project solves three problems at once:
 
-1. **Vision.** Detect a small target on a flat workspace despite a wide-angle lens (significant barrel distortion) and an upward-looking camera geometry.
+1. **Vision.** Detect a small target on a flat workspace despite a wide-angle lens (significant barrel distortion) and a downward-looking camera geometry.
 2. **Coordinate transform.** Map detection pixels into real-world millimeters on the gantry's plane, accounting for both lens distortion and camera-to-workspace perspective.
 3. **Real-time motion.** Continuously command the gantry to follow the target. The gantry is structurally slow (small stepper, ~9 mm/s arm extension), so the architecture is designed to *never commit to a stale target* — every motion is preemptible by a fresher position update.
 
